@@ -1,268 +1,150 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import json
 from pathlib import Path
+from typing import Any
 
 import joblib
-import numpy as np
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import RandomizedSearchCV, train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.tree import DecisionTreeClassifier
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+DEFAULT_MODEL_PATH = ROOT_DIR / "artifact" / "final-model" / "model.pkl"
+DEFAULT_METADATA_PATH = ROOT_DIR / "artifact" / "model_input_metadata.json"
+
+NON_MODEL_COLUMNS = {
+    "explicabilidad",
+    "reglas_criticas_activadas",
+    "reglas_criticas_activadas_json",
+    "alertas_score_activadas",
+    "ids_siniestros_similares_top5",
+    "ids_siniestros_similares_top5_json",
+}
 
 
-ROOT = Path(__file__).resolve().parents[2]
-MODEL_PATH = ROOT / "artifact" / "final-model" / "model.pkl"
-TARGET_COL = "etiqueta_fraude_simulada"
-DEFAULT_DROP_COLS = [
-    "id_siniestro",
-    "id_poliza",
-    "id_asegurado",
-    "id_proveedor",
-    "descripcion",
-    "created_at",
-    "updated_at",
-]
+def load_final_model(model_path: str | Path = DEFAULT_MODEL_PATH) -> Any:
+    """Carga el modelo final exportado en artifact/final-model/model.pkl."""
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"No existe el modelo final en: {model_path}")
+    return joblib.load(model_path)
 
 
-@dataclass(frozen=True)
-class ModelConfig:
-    name: str
-    estimator: object
-    param_distributions: dict
+def load_model_metadata(metadata_path: str | Path = DEFAULT_METADATA_PATH) -> dict[str, Any]:
+    """Carga metadata de entrenamiento, incluyendo columnas esperadas por el modelo."""
+    metadata_path = Path(metadata_path)
+    if not metadata_path.exists():
+        return {}
+    with metadata_path.open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 
-def load_model(model_path: Path | None = None):
-    path = model_path or MODEL_PATH
-    if not path.exists():
-        raise FileNotFoundError(
-            f"No se encontro el modelo final en {path}. "
-            "Ejecuta el notebook 03 para exportarlo."
-        )
-    return joblib.load(path)
+def _default_value_for_column(column: str, metadata: dict[str, Any]) -> Any:
+    numeric_cols = set(metadata.get("numeric_cols", []))
+    categorical_cols = set(metadata.get("categorical_cols", []))
+
+    if column in numeric_cols:
+        return 0
+    if column in categorical_cols:
+        return "Sin dato"
+    if column.startswith("RF_") or column.startswith("score_") or column.startswith("freq_"):
+        return 0
+    return 0
 
 
-def predict(
-    df: pd.DataFrame,
-    model_path: Path | None = None,
-    threshold: float = 0.5,
+def prepare_model_input(features_df: pd.DataFrame, metadata: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Ordena y completa las columnas de entrada que espera el pipeline del modelo."""
+    if features_df.empty:
+        return pd.DataFrame()
+
+    metadata = metadata or {}
+    expected_columns = metadata.get("model_input_columns")
+
+    if not expected_columns:
+        excluded = set(metadata.get("target_col", [])) | NON_MODEL_COLUMNS
+        expected_columns = [col for col in features_df.columns if col not in excluded]
+
+    model_input = features_df.copy()
+
+    for column in expected_columns:
+        if column not in model_input.columns:
+            model_input[column] = _default_value_for_column(column, metadata)
+
+    model_input = model_input[expected_columns].copy()
+
+    for column in metadata.get("numeric_cols", []):
+        if column in model_input.columns:
+            model_input[column] = pd.to_numeric(model_input[column], errors="coerce").fillna(0)
+
+    for column in metadata.get("categorical_cols", []):
+        if column in model_input.columns:
+            model_input[column] = model_input[column].fillna("Sin dato").astype(str)
+
+    return model_input
+
+
+def classify_claims(
+    features_df: pd.DataFrame,
+    model: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+    model_path: str | Path = DEFAULT_MODEL_PATH,
+    metadata_path: str | Path = DEFAULT_METADATA_PATH,
+    threshold: float = 0.50,
 ) -> pd.DataFrame:
-    model = load_model(model_path)
-    probs = model.predict_proba(df)[:, 1]
-    preds = (probs >= threshold).astype(int)
-    return pd.DataFrame({"y_pred": preds, "y_prob": probs})
+    """Clasifica siniestros y agrega probabilidad_ml y prediccion_ml.
+
+    Parameters
+    ----------
+    features_df:
+        DataFrame ya procesado con build_features e integrate_rules_with_features.
+    model:
+        Modelo/pipeline cargado. Si no se entrega, se carga desde model_path.
+    metadata:
+        Metadata del entrenamiento. Si no se entrega, se carga desde metadata_path.
+    threshold:
+        Umbral para convertir probabilidad en prediccion binaria cuando el modelo expone predict_proba.
+    """
+    classified = features_df.copy()
+
+    if classified.empty:
+        classified["probabilidad_ml"] = pd.Series(dtype=float)
+        classified["prediccion_ml"] = pd.Series(dtype=int)
+        return classified
+
+    metadata = metadata if metadata is not None else load_model_metadata(metadata_path)
+    model = model if model is not None else load_final_model(model_path)
+    X = prepare_model_input(classified, metadata)
+
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(X)
+        if probabilities.ndim == 2 and probabilities.shape[1] > 1:
+            risk_probability = probabilities[:, 1]
+        else:
+            risk_probability = probabilities.ravel()
+        classified["probabilidad_ml"] = pd.Series(risk_probability, index=classified.index).clip(0, 1)
+        classified["prediccion_ml"] = (classified["probabilidad_ml"] >= threshold).astype(int)
+    else:
+        predictions = model.predict(X)
+        classified["prediccion_ml"] = pd.Series(predictions, index=classified.index).astype(int)
+        classified["probabilidad_ml"] = classified["prediccion_ml"].astype(float)
+
+    return classified
 
 
-def prepare_training_data(
-    df: pd.DataFrame,
-    target_col: str = TARGET_COL,
-    drop_cols: Sequence[str] | None = None,
-) -> tuple[pd.DataFrame, pd.Series, list[str], list[str]]:
-    columns_to_drop = list(drop_cols) if drop_cols is not None else list(
-        DEFAULT_DROP_COLS
-    )
-    columns_to_drop.append(target_col)
-
-    X = df.drop(columns=[c for c in columns_to_drop if c in df.columns])
-    datetime_cols = X.select_dtypes(include=[
-        "datetime64[ns]",
-        "datetime64[ns, UTC]",
-    ]).columns
-    if len(datetime_cols) > 0:
-        X = X.drop(columns=list(datetime_cols))
-    y = df[target_col].astype(int)
-    cat_cols = X.select_dtypes(include=["object"]).columns.tolist()
-    num_cols = [c for c in X.columns if c not in cat_cols]
-    return X, y, cat_cols, num_cols
-
-
-def build_preprocess(
-    cat_cols: Sequence[str],
-    num_cols: Sequence[str],
-) -> ColumnTransformer:
-    categorical_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("encoder", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
-
-    numeric_pipeline = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-        ]
-    )
-
-    return ColumnTransformer(
-        transformers=[
-            ("cat", categorical_pipeline, list(cat_cols)),
-            ("num", numeric_pipeline, list(num_cols)),
-        ]
-    )
-
-
-def split_training_data(
-    X: pd.DataFrame,
-    y: pd.Series,
-    test_size: float = 0.2,
-    random_state: int = 42,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
-    return train_test_split(
-        X,
-        y,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=y,
-    )
-
-
-def default_model_configs(random_state: int = 42) -> list[ModelConfig]:
-    return [
-        ModelConfig(
-            name="logistic_regression",
-            estimator=LogisticRegression(
-                max_iter=2000,
-                class_weight="balanced",
-            ),
-            param_distributions={
-                "model__C": np.logspace(-3, 2, 10),
-                "model__solver": ["lbfgs", "liblinear"],
-            },
-        ),
-        ModelConfig(
-            name="decision_tree",
-            estimator=DecisionTreeClassifier(
-                class_weight="balanced",
-                random_state=random_state,
-            ),
-            param_distributions={
-                "model__max_depth": [3, 5, 8, 12, None],
-                "model__min_samples_split": [2, 5, 10],
-                "model__min_samples_leaf": [1, 2, 4],
-            },
-        ),
-        ModelConfig(
-            name="random_forest",
-            estimator=RandomForestClassifier(
-                class_weight="balanced",
-                random_state=random_state,
-            ),
-            param_distributions={
-                "model__n_estimators": [100, 200, 300],
-                "model__max_depth": [5, 10, None],
-                "model__min_samples_split": [2, 5, 10],
-                "model__min_samples_leaf": [1, 2, 4],
-            },
-        ),
-    ]
-
-
-class FraudModelTrainer:
-    def __init__(
-        self,
-        preprocess,
-        random_state: int = 42,
-        n_iter: int = 20,
-        cv: int = 5,
-    ):
-        self.preprocess = preprocess
-        self.random_state = random_state
-        self.n_iter = n_iter
-        self.cv = cv
-
-    def build_pipeline(self, estimator):
-        return Pipeline(
-            steps=[
-                ("preprocess", self.preprocess),
-                ("model", estimator),
-            ]
-        )
-
-    def train(
-        self,
-        config: ModelConfig,
-        X_train: pd.DataFrame,
-        y_train: pd.Series,
-    ):
-        pipe = self.build_pipeline(config.estimator)
-        search = RandomizedSearchCV(
-            pipe,
-            param_distributions=config.param_distributions,
-            n_iter=self.n_iter,
-            scoring="f1",
-            cv=self.cv,
-            random_state=self.random_state,
-            n_jobs=-1,
-            verbose=0,
-        )
-        search.fit(X_train, y_train)
-        return search.best_estimator_, search.best_params_, search.best_score_
-
-
-def train_models(
-    trainer: FraudModelTrainer,
-    configs: Sequence[ModelConfig],
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-) -> tuple[dict[str, Pipeline], pd.DataFrame]:
-    trained_models: dict[str, Pipeline] = {}
-    results = []
-    for config in configs:
-        best_model, best_params, best_score = trainer.train(
-            config,
-            X_train,
-            y_train,
-        )
-        trained_models[config.name] = best_model
-        results.append(
-            {
-                "model": config.name,
-                "best_score_cv_f1": best_score,
-                "best_params": best_params,
-            }
-        )
-
-    return trained_models, pd.DataFrame(results)
-
-
-def export_models(
-    trained_models: dict[str, Pipeline],
-    artifact_dir: Path,
-) -> list[Path]:
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    saved_paths: list[Path] = []
-    for name, model in trained_models.items():
-        model_path = artifact_dir / f"{name}.pkl"
-        joblib.dump(model, model_path)
-        saved_paths.append(model_path)
-    return saved_paths
-
-
-def build_predictions(
-    trained_models: dict[str, Pipeline],
-    X_test: pd.DataFrame,
-    y_test: pd.Series,
-    threshold: float = 0.5,
+# Alias en español para uso directo desde API/app.
+def clasificar(
+    features_df: pd.DataFrame,
+    model: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+    model_path: str | Path = DEFAULT_MODEL_PATH,
+    metadata_path: str | Path = DEFAULT_METADATA_PATH,
+    threshold: float = 0.50,
 ) -> pd.DataFrame:
-    pred_rows = []
-    for name, model in trained_models.items():
-        y_prob = model.predict_proba(X_test)[:, 1]
-        y_pred = (y_prob >= threshold).astype(int)
-        pred_rows.append(
-            pd.DataFrame(
-                {
-                    "model": name,
-                    "y_true": y_test.values,
-                    "y_pred": y_pred,
-                    "y_prob": y_prob,
-                }
-            )
-        )
-
-    return pd.concat(pred_rows, ignore_index=True)
+    """Alias de classify_claims."""
+    return classify_claims(
+        features_df=features_df,
+        model=model,
+        metadata=metadata,
+        model_path=model_path,
+        metadata_path=metadata_path,
+        threshold=threshold,
+    )

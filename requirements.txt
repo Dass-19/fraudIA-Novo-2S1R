@@ -1,8 +1,18 @@
-pandas
-numpy
-matplotlib
-seaborn
-scikit-learn
-joblib
-shap
-streamlit
+pandas==2.2.3
+numpy==2.3.5
+matplotlib==3.10.8
+seaborn==0.13.2
+scikit-learn==1.8.0
+joblib==1.5.3
+shap==0.50.0
+python-dotenv==1.2.2
+
+# PostgreSQL
+psycopg2-binary
+SQLAlchemy
+
+# LangChain SQL agent + Hugging Face Inference API
+langchain
+langchain-community
+langchain-huggingface
+huggingface-hub
