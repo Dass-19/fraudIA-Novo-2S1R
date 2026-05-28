@@ -113,7 +113,12 @@ def score_dinamica_sospechosa(df: pd.DataFrame) -> pd.Series:
 
 
 def score_evento_sin_tercero(df: pd.DataFrame) -> pd.Series:
-    return pd.Series(0, index=df.index)
+    desc = _series(df, "descripcion", "").astype(str).str.lower()
+    flag = desc.str.contains(
+        "fuga|huy[oó]|sin tercero|no identificado",
+        regex=True
+        )
+    return pd.Series(np.where(flag, 5, 0), index=df.index)
 
 
 def score_monto_suma_asegurada(df: pd.DataFrame) -> pd.Series:
