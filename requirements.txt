@@ -16,6 +16,7 @@ langchain
 langchain-core
 langchain-community
 langchain-google-genai
+
 # API FastAPI
 fastapi
 uvicorn[standard]

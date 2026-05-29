@@ -25,7 +25,7 @@ class SqlAgentConfig:
     table: str = DEFAULT_TABLE
     model_id: str | None = None
     temperature: float = 0.1
-    max_new_tokens: int = 512
+    max_new_tokens: int = 724
     top_k: int = 10
     verbose: bool = False
 
@@ -67,7 +67,8 @@ def build_postgres_uri() -> str:
     port = os.getenv("DB_PORT", "5432")
     database = quote_plus(os.getenv("DB_NAME", "fraudia-db"))
 
-    return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+    return f"postgresql://{user}:{password}@{host}:{port}/{database}?sslmode=require"
+
 
 
 def create_google_gemini_llm(
