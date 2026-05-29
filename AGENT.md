@@ -33,20 +33,17 @@ DB_NAME=fraudia-db
 DB_USER=postgres
 DB_PASSWORD=change_me
 
-HUGGINGFACEHUB_API_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3
+GOOGLE_API_KEY=
+GOOGLE_MODEL_ID=gemini-2.5-flash
 ```
 
-## Modelos sugeridos
+## Modelo sugerido
 
-Puedes probar con:
+Por defecto el agente usa:
 
-- `mistralai/Mistral-7B-Instruct-v0.3`
-- `Qwen/Qwen2.5-7B-Instruct`
-- `meta-llama/Meta-Llama-3.1-8B-Instruct`
-- `microsoft/Phi-3.5-mini-instruct`
+- `gemini-2.5-flash`
 
-Algunos modelos requieren permisos o aceptar terminos en Hugging Face.
+Puedes cambiarlo con `GOOGLE_MODEL_ID` si quieres usar otro modelo compatible de Gemini.
 
 ## Uso desde Python
 
@@ -85,7 +82,7 @@ python scripts/ai_agent/claims_agent.py "Que proveedores concentran mas alertas 
 
 ## Prueba en bash
 
-Sin token de Hugging Face, la prueba solo valida imports y construccion de URI:
+Sin API key de Google AI Studio / Gemini, la prueba solo valida imports y construccion de URI:
 
 ```bash
 bash tests/test_sql_agent.sh

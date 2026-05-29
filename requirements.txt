@@ -11,8 +11,12 @@ python-dotenv==1.2.2
 psycopg2-binary
 SQLAlchemy
 
-# LangChain SQL agent + Hugging Face Inference API
+# LangChain SQL agent + Google AI Studio / Gemini
 langchain
+langchain-core
 langchain-community
-langchain-huggingface
-huggingface-hub
+langchain-google-genai
+# API FastAPI
+fastapi
+uvicorn[standard]
+python-multipart
