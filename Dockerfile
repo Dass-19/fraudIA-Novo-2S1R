@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_NO_CACHE=1
 
-WORKDIR /app
+WORKDIR /usr/src/app
 
 RUN pip install --no-cache-dir uv
 
@@ -18,9 +18,4 @@ RUN uv pip install --system --no-cache -r requirements.txt
 
 COPY . .
 
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
-
-CMD ["sh", "-c", "uvicorn scripts.app.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["uvicorn", "scripts.app.main:app", "--host", "0.0.0.0", "--port", "7860"]
