@@ -31,21 +31,20 @@ Esto permite detectar reclamos con descripciones parecidas o clonadas.
 
 ## 3. Agente SQL
 
-`claims_agent.py` usa LangChain con `create_sql_agent`, PostgreSQL y un LLM de Hugging Face por API.
+`claims_agent.py` usa LangChain con `create_sql_agent`, PostgreSQL y un LLM de Google AI Studio / Gemini por API.
 
 Variables requeridas:
 
 ```env
-HUGGINGFACEHUB_API_TOKEN=hf_xxx
-HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3
+GOOGLE_API_KEY=
+GOOGLE_MODEL_ID=gemini-2.5-flash
 ```
 
-Modelos sugeridos para probar:
+Modelo sugerido por defecto:
 
-- `mistralai/Mistral-7B-Instruct-v0.3`
-- `Qwen/Qwen2.5-7B-Instruct`
-- `meta-llama/Meta-Llama-3.1-8B-Instruct`
-- `microsoft/Phi-3.5-mini-instruct`
+- `gemini-2.5-flash`
+
+Puedes cambiarlo con `GOOGLE_MODEL_ID` si quieres usar otro modelo compatible de Gemini.
 
 El agente consulta la tabla `fraud_ia.siniestros_scored_final` y puede responder preguntas como:
 

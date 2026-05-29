@@ -25,7 +25,7 @@ Se recomienda crearla antes de ejecutar la ingesta usando el archivo SQL de DDL 
 
 ## Variables de entorno
 
-El proyecto usa `.env` para PostgreSQL y Hugging Face:
+El proyecto usa `.env` para PostgreSQL y Google AI Studio / Gemini:
 
 ```env
 DB_HOST=localhost
@@ -33,8 +33,8 @@ DB_PORT=5432
 DB_NAME=fraudia-db
 DB_USER=postgres
 DB_PASSWORD=change_me
-HUGGINGFACEHUB_API_TOKEN=hf_xxx
-HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3
+GOOGLE_API_KEY=
+GOOGLE_MODEL_ID=gemini-2.5-flash
 ```
 
 ## Consideracion de despliegue

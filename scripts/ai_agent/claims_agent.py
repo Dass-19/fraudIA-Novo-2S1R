@@ -5,24 +5,18 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote_plus
 
+try:
+    from langchain_core.chat_history import InMemoryChatMessageHistory
+    from langchain_core.runnables.history import RunnableWithMessageHistory
+except ImportError as exc:
+    InMemoryChatMessageHistory = None  # type: ignore[assignment]
+    RunnableWithMessageHistory = None  # type: ignore[assignment]
+    LANGCHAIN_CORE_IMPORT_ERROR = exc
+else:
+    LANGCHAIN_CORE_IMPORT_ERROR = None
+
 DEFAULT_SCHEMA = "fraud_ia"
 DEFAULT_TABLE = "siniestros_scored_final"
-
-# Variables esperadas en .env:
-# DB_HOST=localhost
-# DB_PORT=5432
-# DB_NAME=fraudia-db
-# DB_USER=postgres
-# DB_PASSWORD=********
-# HUGGINGFACEHUB_API_TOKEN=hf_...
-# HF_MODEL_ID=mistralai/Mistral-7B-Instruct-v0.3
-#
-# Modelos Hugging Face sugeridos para probar por API:
-# - mistralai/Mistral-7B-Instruct-v0.3
-# - Qwen/Qwen2.5-7B-Instruct
-# - meta-llama/Meta-Llama-3.1-8B-Instruct (puede requerir aceptar terminos)
-# - microsoft/Phi-3.5-mini-instruct
-# Algunos modelos requieren permisos en Hugging Face o un endpoint inference compatible.
 
 
 @dataclass(frozen=True)
@@ -34,6 +28,20 @@ class SqlAgentConfig:
     max_new_tokens: int = 512
     top_k: int = 10
     verbose: bool = False
+
+
+session_store: dict[str, Any] = {}
+
+
+def get_session_history(session_id: str) -> Any:
+    """Recupera o crea el historial en memoria para una sesion de chat."""
+    if InMemoryChatMessageHistory is None:
+        raise ImportError(
+            "Instala langchain-core para usar memoria conversacional en el agente SQL."
+        ) from LANGCHAIN_CORE_IMPORT_ERROR
+    if session_id not in session_store:
+        session_store[session_id] = InMemoryChatMessageHistory()
+    return session_store[session_id]
 
 
 def load_env() -> None:
@@ -62,37 +70,41 @@ def build_postgres_uri() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
 
-def create_huggingface_llm(
+def create_google_gemini_llm(
     model_id: str | None = None,
     temperature: float = 0.1,
     max_new_tokens: int = 512,
 ):
-    """Crea un LLM usando Hugging Face Inference API via LangChain."""
+    """Crea un chat model de Gemini usando Google AI Studio via LangChain."""
     load_env()
 
     try:
-        from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+        from langchain_google_genai import ChatGoogleGenerativeAI
     except ImportError as exc:
         raise ImportError(
-            "Instala langchain-huggingface para usar el agente SQL con Hugging Face."
+            "Instala langchain-google-genai para usar el agente SQL con Google AI Studio/Gemini."
         ) from exc
 
-    token = os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_TOKEN")
-    selected_model = model_id or os.getenv("HF_MODEL_ID") or "mistralai/Mistral-7B-Instruct-v0.3"
+    token = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    selected_model = (
+        model_id
+        or os.getenv("GOOGLE_MODEL_ID")
+        or os.getenv("GEMINI_MODEL_ID")
+        or "gemini-2.5-flash"
+    )
 
     if not token:
         raise RuntimeError(
-            "Falta HUGGINGFACEHUB_API_TOKEN en .env. Crea un token en Hugging Face y agregalo antes de usar el agente."
+            "Falta GOOGLE_API_KEY en .env. Crea una API key en Google AI Studio y agregala antes de usar el agente."
         )
 
-    llm = HuggingFaceEndpoint(
-        repo_id=selected_model,
-        task="text-generation",
-        huggingfacehub_api_token=token,
+    return ChatGoogleGenerativeAI(
+        model=selected_model,
+        api_key=token,
         temperature=temperature,
-        max_new_tokens=max_new_tokens
-        )
-    return ChatHuggingFace(llm=llm)
+        max_tokens=max_new_tokens,
+        max_retries=2,
+    )
 
 
 def create_claims_sql_agent(config: SqlAgentConfig | None = None):
@@ -118,7 +130,7 @@ def create_claims_sql_agent(config: SqlAgentConfig | None = None):
         include_tables=[config.table],
         sample_rows_in_table_info=3,
     )
-    llm = create_huggingface_llm(
+    llm = create_google_gemini_llm(
         model_id=config.model_id,
         temperature=config.temperature,
         max_new_tokens=config.max_new_tokens,
@@ -126,27 +138,65 @@ def create_claims_sql_agent(config: SqlAgentConfig | None = None):
 
     prefix = f"""
 Eres un asistente analitico para siniestros de seguros.
+Tu respuesta DEBE estar formateada exclusivamente en HTML semántico (sin etiquetas <html> ni <body>, sin Markdown).
 Responde en español, con foco en revision humana y posible riesgo, nunca como acusacion de fraude.
 Usa exclusivamente la tabla {config.schema}.{config.table}.
 No ejecutes INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE ni CREATE.
 Para rankings usa ORDER BY y LIMIT. Para porcentajes usa NULLIF cuando haya divisiones.
 Si no hay datos suficientes, dilo claramente.
+Usa el historial de chat disponible para resolver referencias como "esos", "los anteriores" o "ese siniestro".
+Para preguntas sobre el semaforo siempre usa el campo: semaforo_final.
+Si te consultan especificamente por un siniestro, con los campos reglas_criticas_activadas, alertas_score_activadas y explicabilidad puedes complementar tu respuesta.
+""".strip()
+
+    suffix = """
+Historial de conversacion:
+{chat_history}
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}
 """.strip()
 
     return create_sql_agent(
         llm=llm,
         db=db,
         prefix=prefix,
+        suffix=suffix,
+        input_variables=["input", "agent_scratchpad", "chat_history"],
         top_k=config.top_k,
         verbose=config.verbose,
         agent_executor_kwargs={"handle_parsing_errors": True},
     )
 
 
-def ask_claims_agent(question: str, config: SqlAgentConfig | None = None) -> str:
-    """Funcion simple para llamar el agente desde una API o app."""
+def ask_claims_agent(
+    question: str,
+    session_id: str = "default_session",
+    config: SqlAgentConfig | None = None,
+) -> str:
+    """Funcion simple para llamar el agente desde una API o app, ahora con memoria."""
+    if RunnableWithMessageHistory is None:
+        raise ImportError(
+            "Instala langchain-core para usar memoria conversacional en el agente SQL."
+        ) from LANGCHAIN_CORE_IMPORT_ERROR
+
     agent = create_claims_sql_agent(config=config)
-    response: Any = agent.invoke({"input": question})
+
+    agent_with_history = RunnableWithMessageHistory(
+        agent,
+        get_session_history,
+        input_messages_key="input",
+        history_messages_key="chat_history",
+        output_messages_key="output",
+    )
+
+    response: Any = agent_with_history.invoke(
+        {"input": question},
+        config={"configurable": {"session_id": session_id}},
+    )
+
     if isinstance(response, dict):
         return str(response.get("output", response))
     return str(response)
@@ -157,8 +207,21 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Pregunta al agente SQL de siniestros.")
     parser.add_argument("question", help="Pregunta en lenguaje natural.")
-    parser.add_argument("--verbose", action="store_true", help="Muestra pasos intermedios del agente.")
+    parser.add_argument("--verbose", action="store_true", help="Muestra pasos intermedios.")
     args = parser.parse_args()
 
-    answer = ask_claims_agent(args.question, config=SqlAgentConfig(verbose=args.verbose))
-    print(answer)
+    print("Respuesta 1:")
+    answer_1 = ask_claims_agent(
+        args.question,
+        session_id="consola_1",
+        config=SqlAgentConfig(verbose=args.verbose),
+    )
+    print(answer_1)
+
+    print("\nRespuesta 2 (Prueba de contexto):")
+    answer_2 = ask_claims_agent(
+        "¿Cuáles de esos tienen mayor riesgo?",
+        session_id="consola_1",
+        config=SqlAgentConfig(verbose=args.verbose),
+    )
+    print(answer_2)

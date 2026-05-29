@@ -14,9 +14,9 @@ RUN_MODE="${1:-}" python - <<'PY'
 import os
 from scripts.ai_agent.claims_agent import create_claims_sql_agent, SqlAgentConfig
 
-has_hf = bool(os.getenv("HUGGINGFACEHUB_API_TOKEN") or os.getenv("HF_TOKEN"))
-if not has_hf:
-    print("Sin HUGGINGFACEHUB_API_TOKEN/HF_TOKEN: se omite prueba real del agente.")
+has_google_key = bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
+if not has_google_key:
+    print("Sin GOOGLE_API_KEY/GEMINI_API_KEY: se omite prueba real del agente.")
     print("Cuando agregues la clave, ejecuta: bash tests/test_sql_agent.sh run")
     raise SystemExit(0)
 
@@ -25,5 +25,5 @@ if os.getenv('RUN_MODE') == 'run':
     response = agent.invoke({"input": "Cuantos siniestros hay por semaforo_final?"})
     print(response)
 else:
-    print("Token encontrado. Para ejecutar una consulta real usa: bash tests/test_sql_agent.sh run")
+    print("API key encontrada. Para ejecutar una consulta real usa: bash tests/test_sql_agent.sh run")
 PY

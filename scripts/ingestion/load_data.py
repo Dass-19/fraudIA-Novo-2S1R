@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping, TextIO
 
@@ -350,6 +351,47 @@ def process_files_and_upsert(
     upsert_final_dataframe(final_df, table_name=table_name)
     return final_df
 
+
+
+def _json_safe_value(value: Any) -> Any:
+    """Convierte valores pandas/numpy/fechas a tipos JSON seguros para FastAPI."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+    if isinstance(value, np.ndarray):
+        return [_json_safe_value(item) for item in value.tolist()]
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, np.generic):
+        return _json_safe_value(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return value
+
+
+def dataframe_to_api_records(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Serializa el resultado final del pipeline al contrato JSON usado por la API/front.
+
+    Usa `normalize_for_db` para mantener nombres y shape alineados con
+    fraud_ia.siniestros_scored_final, pero devuelve listas/dicts/fechas como JSON plano.
+    """
+    api_df = normalize_for_db(df)
+    records = api_df.to_dict(orient="records")
+    return [
+        {str(column): _json_safe_value(value) for column, value in record.items()}
+        for record in records
+    ]
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Procesa siniestros y hace upsert del resultado final en PostgreSQL.")
